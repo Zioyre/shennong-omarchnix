@@ -13,14 +13,17 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/chromium /opt/az || true
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Enable Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Compile static ARM64 bt-hid-bridge from Th0rgal/sidesystem
         run: |

@@ -22,6 +22,20 @@
   # Ensure container-safe defaults don't collide with Droidspaces' rootfs module
   boot.isContainer = lib.mkForce true;
 
+  # Disable bare-metal daemons that cannot/should not manage host hardware from inside an Android container
+  security.auditd.enable = lib.mkForce false;
+  systemd.oomd.enable = lib.mkForce false;
+  services.timesyncd.enable = lib.mkForce false;
+  services.chrony.enable = lib.mkForce false;
+  services.ntp.enable = lib.mkForce false;
+  services.thermald.enable = lib.mkForce false;
+  services.fwupd.enable = lib.mkForce false;
+  services.smartd.enable = lib.mkForce false;
+  services.irqbalance.enable = lib.mkForce false;
+  services.udisks2.enable = lib.mkForce false;
+  services.upower.enable = lib.mkForce false;
+  services.power-profiles-daemon.enable = lib.mkForce false;
+
   # Normal desktop user inside the NixOS container
   users.users.zioyre = {
     isNormalUser = true;

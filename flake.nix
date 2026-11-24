@@ -25,7 +25,6 @@
         };
         modules = [
           droidspaces.nixosModules.working-droidspaces-rootfs-minimal
-          droidspaces.nixosModules.container-disable-unwanted
           ./hosts/shennong.nix
         ];
       };
