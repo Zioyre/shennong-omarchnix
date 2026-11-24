@@ -711,12 +711,13 @@ if [ "$GPU_MODE" = "hw" ] && [ -n "$AQ_RAZR_LIB" ] && [ -r "$AQ_RAZR_LIB" ]; the
     hyprctl eval "hl.monitor({ output = \"HEADLESS-1\", mode = \"${SWAY_RES}\", position = \"0x0\", scale = \"${SCALE}\" })" >/dev/null 2>&1 || true
     SWAY_SOCK="$HYPR_SOCK"
 else
-    # Fallback: headless sway with llvmpipe + nested Hyprland.
+    # Fallback: headless sway with pixman + nested Hyprland (llvmpipe).
     env -u MESA_LOADER_DRIVER_OVERRIDE -u ZINK_KGSL_FALLBACK -u TU_DEBUG \
         -u VK_ICD_FILENAMES -u LIBGL_DRIVERS_PATH -u GBM_BACKENDS_PATH -u __EGL_VENDOR_LIBRARY_FILENAMES \
         LIBGL_ALWAYS_SOFTWARE=1 \
         GALLIUM_DRIVER=llvmpipe \
         WLR_BACKENDS=headless \
+        WLR_RENDERER=pixman \
         WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER_ALLOW_SOFTWARE=1 \
         nohup sway -c /tmp/razr-sway.conf >"${XDG_RUNTIME_DIR}/sway.log" 2>&1 </dev/null &

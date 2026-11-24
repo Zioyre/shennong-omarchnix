@@ -1,0 +1,40 @@
+name: Build Adreno KGSL GPU Stack (mesa-razr-kgsl + aquamarine-razr)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-gpu-stack:
+    name: "mesa-razr-kgsl + aquamarine-razr (aarch64-linux)"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build mesa-razr-kgsl and aquamarine-razr
+        run: |
+          mkdir -p out-artifacts
+          nix build .#mesa-razr-kgsl .#aquamarine-razr --print-build-logs --out-link result-gpu
+          MESA_PATH="$(readlink -f result-gpu)"
+          AQ_PATH="$(readlink -f result-gpu-1)"
+          echo "MESA_PATH=$MESA_PATH"
+          echo "AQ_PATH=$AQ_PATH"
+          printf '%s\n%s\n' "$MESA_PATH" "$AQ_PATH" > out-artifacts/store-paths.txt
+          # Export full runtime closure so nix-store --import never misses a reference
+          nix-store --export $(nix-store -qR "$MESA_PATH" "$AQ_PATH") | gzip -6 > out-artifacts/shennong-gpu-stack.nar.gz
+          ls -lh out-artifacts/
+
+      - name: Upload GPU stack NAR bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: shennong-gpu-stack-aarch64
+          path: out-artifacts/
+          retention-days: 30
