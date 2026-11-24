@@ -1,0 +1,209 @@
+name: Build GKI 6.1.138-android14-11 Kernel (Droidspaces + NixOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kabi_slot:
+        description: "Droidspaces SYSVIPC kABI padding slot (try 6_7_8 first)"
+        required: true
+        type: choice
+        options:
+          - "6_7_8"
+          - "3_4_5"
+          - "1_2_3"
+        default: "6_7_8"
+
+permissions:
+  contents: read
+
+jobs:
+  build-gki-kernel:
+    name: "GKI 6.1.138-android14-11 (slot ${{ inputs.kabi_slot || '6_7_8' }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      MANIFEST_BRANCH: "common-android14-6.1-2025-06"
+      TARGET_TAG: "refs/tags/android14-6.1-2025-06_r15"
+      KABI_SLOT: "${{ inputs.kabi_slot || '6_7_8' }}"
+      LOCAL_SUFFIX: "-android14-11-g0c3d559bcd85-ab14529422"
+
+    steps:
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/chromium /opt/az \
+            /usr/local/lib/node_modules /usr/local/julia* || true
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 git curl build-essential libssl-dev \
+            bison flex libelf-dev dwarves zip lz4
+
+      - name: Install repo tool & clone packaging helpers
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$GITHUB_WORKSPACE/bin/repo"
+          chmod +x "$GITHUB_WORKSPACE/bin/repo"
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+          git config --global user.name "shennong-builder"
+          git config --global user.email "builder@users.noreply.github.com"
+
+          git clone --depth 1 -b main-kernel-build-2024 \
+            https://android.googlesource.com/kernel/prebuilts/build-tools \
+            "$GITHUB_WORKSPACE/kernel-build-tools"
+          git clone --depth 1 -b main-kernel-build-2024 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg \
+            "$GITHUB_WORKSPACE/mkbootimg"
+          git clone --depth 1 -b gki-2.0 \
+            https://github.com/WildKernels/AnyKernel3.git \
+            "$GITHUB_WORKSPACE/AnyKernel3"
+          rm -rf "$GITHUB_WORKSPACE/AnyKernel3/.git"
+
+          git clone --depth 1 \
+            https://github.com/ravindu644/Droidspaces-OSS.git \
+            "$GITHUB_WORKSPACE/Droidspaces-OSS"
+
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+            > "$GITHUB_WORKSPACE/testkey_rsa2048.pem"
+
+      - name: Sync exact AOSP GKI source (android14-6.1-2025-06_r15 / 0c3d559bcd85)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          repo init --depth=1 \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b "$MANIFEST_BRANCH" \
+            --repo-rev=v2.16
+
+          # Pin kernel/common to the exact tag matching Xiaomi 14 Pro Ti's stock 6.1.138-android14-11-g0c3d559bcd85
+          sed -i "s|revision=\"android14-6.1-2025-06\"|revision=\"${TARGET_TAG}\"|g" .repo/manifests/default.xml
+          grep -n "common" .repo/manifests/default.xml || true
+
+          repo sync -c -j4 --jobs-checkout=4 --no-tags --no-clone-bundle --retry-fetches=3
+
+          echo "=== Verified kernel/common HEAD ==="
+          git -C common rev-parse HEAD
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)' common/Makefile
+
+      - name: Apply Droidspaces SYSVIPC kABI patch & config fragment
+        working-directory: ${{ github.workspace }}/kernel
+        run: |
+          PATCH_FILE="$GITHUB_WORKSPACE/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${KABI_SLOT}.patch"
+          echo "Applying patch: $PATCH_FILE"
+          patch -d common -p1 --forward < "$PATCH_FILE"
+
+          cat > common/arch/arm64/configs/droidspaces.fragment <<'EOF'
+          # Core Droidspaces IPC & Namespaces (kABI-safe with SYSVIPC padding patch)
+          CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_IPC_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_USER_NS=y
+
+          # Networking (Enhanced NAT, IPv6 NAT, Macvlan, UFW/IPSet)
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          CONFIG_MACVLAN=y
+          CONFIG_IP_NF_TARGET_REJECT=y
+          CONFIG_IP6_NF_TARGET_REJECT=y
+          CONFIG_NETFILTER_XT_TARGET_LOG=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+
+          # Required by NixOS containers (tmpfs xattr + POSIX ACL)
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_TMPFS_XATTR=y
+          EOF
+
+          # Allow building modified GKI kernel without strict protected export / KMI trim rejection
+          sed -i '/"protected_exports_list"/d' common/BUILD.bazel
+          sed -i '/"protected_modules_list"/d' common/BUILD.bazel
+          sed -i '/kmi_symbol_list_strict_mode/d' common/BUILD.bazel
+          rm -f common/android/abi_gki_protected_exports_*
+          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" build/kernel/kleaf/impl/stamp.bzl
+
+          # Match the stock 6.1.138-android14-11-g0c3d559bcd85-ab14529422 release string cleanly
+          sed -i "\$s|echo \"\$res\"|echo \"${LOCAL_SUFFIX}\"|" common/scripts/setlocalversion || true
+          sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' common/build.config.gki.aarch64 || true
+          sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' common/build.config.gki.aarch64 || true
+
+      - name: Compile GKI kernel with Bazel/Kleaf
+        working-directory: ${{ github.workspace }}/kernel
+        run: |
+          tools/bazel build \
+            --config=fast \
+            --lto=thin \
+            --defconfig_fragment=//common:arch/arm64/configs/droidspaces.fragment \
+            //common:kernel_aarch64_dist
+
+      - name: Verify kernel version string & Droidspaces/NixOS config flags
+        working-directory: ${{ github.workspace }}/kernel
+        run: |
+          IMAGE_PATH="bazel-bin/common/kernel_aarch64/Image"
+          CONFIG_PATH="bazel-bin/common/kernel_aarch64/.config"
+
+          echo "=== Kernel banner ==="
+          strings "$IMAGE_PATH" | grep 'Linux version' | head -n 5
+
+          if [ -f "$CONFIG_PATH" ]; then
+            echo "=== Checking required Droidspaces + NixOS flags in .config ==="
+            for flag in CONFIG_PID_NS CONFIG_IPC_NS CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_DEVTMPFS CONFIG_USER_NS CONFIG_TMPFS_XATTR CONFIG_TMPFS_POSIX_ACL; do
+              grep "^${flag}=y$" "$CONFIG_PATH" || { echo "MISSING FLAG: $flag"; exit 1; }
+            done
+          fi
+
+      - name: Package AnyKernel3 zip, boot.img variants, and raw Image
+        run: |
+          OUT="$GITHUB_WORKSPACE/out-artifacts"
+          mkdir -p "$OUT"
+
+          SRC="$GITHUB_WORKSPACE/kernel/bazel-bin/common/kernel_aarch64"
+          cp "$SRC/Image" "$OUT/Image"
+          cp "$SRC/Image.lz4" "$OUT/Image.lz4"
+          gzip -n -k -f -9 "$OUT/Image" > "$OUT/Image.gz"
+
+          # AnyKernel3 flashable zip (preserves Magisk in init_boot)
+          cp "$OUT/Image" "$GITHUB_WORKSPACE/AnyKernel3/Image"
+          (cd "$GITHUB_WORKSPACE/AnyKernel3" && zip -r9 "$OUT/shennong-6.1.138-android14-11-droidspaces-slot${KABI_SLOT}-AnyKernel3.zip" ./*)
+
+          # Android 14 header v4 boot.img variants (uncompressed, gz, lz4) with AVB hash footer
+          MKBOOTIMG="$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py"
+          AVBTOOL="$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool"
+          KEY="$GITHUB_WORKSPACE/testkey_rsa2048.pem"
+
+          for variant in "boot:Image" "boot-gz:Image.gz" "boot-lz4:Image.lz4"; do
+            name="${variant%%:*}"
+            img="${variant#*:}"
+            out_img="$OUT/shennong-6.1.138-android14-11-droidspaces-slot${KABI_SLOT}-${name}.img"
+            python3 "$MKBOOTIMG" --header_version 4 --kernel "$OUT/$img" --output "$out_img"
+            "$AVBTOOL" add_hash_footer \
+              --partition_name boot \
+              --partition_size $((64 * 1024 * 1024)) \
+              --image "$out_img" \
+              --algorithm SHA256_RSA2048 \
+              --key "$KEY"
+          done
+
+          ls -lh "$OUT"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shennong-gki-6.1.138-droidspaces-slot${{ env.KABI_SLOT }}
+          path: out-artifacts/
+          retention-days: 30

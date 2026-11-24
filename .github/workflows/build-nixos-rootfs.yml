@@ -1,0 +1,52 @@
+name: Build Omarchnix ARM64 NixOS Rootfs & SideSystem Tools
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-rootfs:
+    name: "NixOS + Omarchnix aarch64-linux tarball & bt-hid-bridge"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Compile static ARM64 bt-hid-bridge from Th0rgal/sidesystem
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libc6-dev
+          mkdir -p out-artifacts
+          curl -fsSL https://raw.githubusercontent.com/Th0rgal/sidesystem/main/scripts/bt-hid-bridge.c \
+            -o /tmp/bt-hid-bridge.c
+          gcc -O2 -static -Wall -Wextra -o out-artifacts/bt-hid-bridge /tmp/bt-hid-bridge.c
+          file out-artifacts/bt-hid-bridge
+          cp scripts/sidesystem-ctl out-artifacts/sidesystem-ctl
+          chmod +x out-artifacts/sidesystem-ctl
+
+      - name: Build NixOS + Omarchnix Droidspaces tarball (aarch64-linux)
+        run: |
+          nix build .#nixosConfigurations.shennong.config.system.build.tarball \
+            --accept-flake-config \
+            --print-build-logs \
+            -o result-tarball
+          ls -lh result-tarball/tarball/
+          cp result-tarball/tarball/*.tar.xz out-artifacts/shennong-omarchnix-rootfs.tar.xz
+          ls -lh out-artifacts/
+
+      - name: Upload NixOS rootfs & SideSystem artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shennong-omarchnix-rootfs-aarch64
+          path: out-artifacts/
+          retention-days: 30
